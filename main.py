@@ -1,29 +1,38 @@
-"""
-Jenkins AI Chatbot using Streamlit and Ollama
-
-This application creates a web-based chatbot interface for answering questions
-about Jenkins CI/CD. It uses the Ollama local LLM service with the 'phi' model
-to generate responses and tracks response times for performance monitoring.
-
-Requirements:
-- streamlit
-- langchain-community
-- ollama (with 'phi' model pulled)
-
-Usage:
-    streamlit run main.py
-"""
-
 import streamlit as st
 import time
 from langchain_ollama import OllamaLLM
+from langchain_core.documents import Document
+from langchain.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.runnables import RunnablePassthrough
+from langchain.chains import RetrievalQA
+from config import EMBEDDING_MODEL_NAME, FAISS_INDEX_PATH, MODEL_NAME
 
-# Initialize the Ollama model (make sure `phi` is pulled via `ollama pull phi`)
-llm = OllamaLLM(model="phi")
+# Load FAISS retriever
+embeddings = HuggingFaceEmbeddings(
+    model_name=EMBEDDING_MODEL_NAME,
+    model_kwargs={"device": "cpu"}
+)
+vectorstore = FAISS.load_local(
+    FAISS_INDEX_PATH,
+    embeddings,
+    allow_dangerous_deserialization=True
+)
+retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-# Page config
-st.set_page_config(page_title="Jenkins AI Chatbot", layout="centered")
-st.title("🤖 Jenkins AI Chatbot")
+# Set up LLM
+llm = OllamaLLM(model=MODEL_NAME)
+
+# Retrieval-based QA chain
+qa_chain = RetrievalQA.from_chain_type(
+    llm=llm,
+    retriever=retriever,
+    return_source_documents=True
+)
+
+# Chatbot UI
+st.set_page_config(page_title="JMaaS AI Chatbot", layout="centered")
+st.title("🤖 JMaaS AI Chatbot")
 st.markdown("Ask me anything about Jenkins!")
 
 # Initialize chat history
@@ -40,23 +49,26 @@ for msg in st.session_state.messages:
 # Accept user input
 query = st.chat_input("What's your Jenkins question?")
 if query:
-    # Show user message
     st.session_state.messages.append({"role": "user", "content": query})
     with st.chat_message("user"):
         st.markdown(query)
 
-    # Generate response and track time
     with st.chat_message("assistant"):
         start = time.time()
-        response = llm.invoke(query)
+        result = qa_chain.invoke({"query": query})
         end = time.time()
         duration = round(end - start, 2)
 
-        st.markdown(response)
+        st.markdown(result["result"])
         st.markdown(f"⏱️ **Response time:** {duration} seconds")
+
+        # Optional: show source chunks (for transparency/debugging)
+        with st.expander("📄 Sources"):
+            for doc in result["source_documents"]:
+                st.markdown(f"• {doc.page_content[:300]}...")
 
         st.session_state.messages.append({
             "role": "assistant",
-            "content": response,
+            "content": result["result"],
             "duration": duration
         })
